@@ -105,7 +105,7 @@ async def peripheral_task():
             appearance=_ADV_APPEARANCE_GENERIC_SENSOR,
         ) as connection:
             _logger("Connection from:", connection.device)
-            await connection.disconnected()
+            await connection.disconnected(timeout_ms=None)
             _logger("Device disconeccted:", connection.device)
             await asyncio.sleep_ms(100)
 
