@@ -57,7 +57,7 @@ def _logger(*args, **kwargs):
         log_file.flush()
 
 # Write to LCD and set backlight
-def write_to_LCD(line1: str, line2: str, backlight: str):
+def write_to_LCD(line1: str, line2: str, backlight: str = "normal"):
     # Truncate strings to 16 characters - LCD is 16x2
     line1 = line1[:16]
     line2 = line2[:16]
