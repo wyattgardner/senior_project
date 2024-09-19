@@ -15,14 +15,15 @@ import RGB1602
 ENABLE_LOGGING = const(False)
 
 # GPIO Pins used for sensors
-# LCD: SDA is on GPIO4, and SCL is on GPIO5
+# LCD: SDA is on GPIO20, and SCL is on GPIO21
 MQ_4 = machine.ADC(machine.Pin(28))
 MQ_7 = machine.ADC(machine.Pin(27))
 MQ_135 = machine.ADC(machine.Pin(26))
 #LCD = RGB1602.RGB1602(16, 2)
 
 # Voltage Divider (used to convert sensor output from 5V to 3.3V)
-V_DIV = const(1000 / (470 + 1000))
+# 1000 / (470 + 1000)
+V_DIV = const(0.680272108843537)
 
 # BLE Constants
 # org.bluetooth.service.environmental_sensing
@@ -69,6 +70,9 @@ def write_to_LCD(line1: str, line2: str, backlight: str = "normal"):
     line1 = line1[:16]
     line2 = line2[:16]
 
+    # Clear LCD
+    LCD.clear()
+    
     # Write both lines to LCD
     LCD.setCursor(0, 0)
     LCD.printout(line1)
