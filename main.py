@@ -7,17 +7,24 @@ import uasyncio as asyncio
 import aioble
 import bluetooth
 import machine
+import math
 import RGB1602
 
 # Enables logging to log.txt in root directory of Pico W
 # For testing/debugging purposes only, will eventually fill the board's 2 MB flash memory
 ENABLE_LOGGING = const(False)
+
 # GPIO Pins used for sensors
 # LCD: SDA is on GPIO4, and SCL is on GPIO5
-MQ_9 = machine.Pin(2, machine.Pin.OUT)
-MQ_135 = machine.Pin(3, machine.Pin.OUT)
+MQ_4 = machine.ADC(machine.Pin(28))
+MQ_7 = machine.ADC(machine.Pin(27))
+MQ_135 = machine.ADC(machine.Pin(26))
 #LCD = RGB1602.RGB1602(16, 2)
 
+# Voltage Divider (used to convert sensor output from 5V to 3.3V)
+V_DIV = const(1000 / (470 + 1000))
+
+# BLE Constants
 # org.bluetooth.service.environmental_sensing
 _ENV_SENSE_UUID = bluetooth.UUID(0x181A)
 # Carbon Monoxide
@@ -77,6 +84,32 @@ def write_to_LCD(line1: str, line2: str, backlight: str = "normal"):
         LCD.setRGB(255, 0, 0)
     else:
         LCD.setRGB(255, 255, 255)
+
+def read_gas_sensor(adc : machine.ADC):
+    # Read the analog value (0 - 65535)
+    raw_adc = adc.read_u16()
+
+    # Calculate voltage seen by ADC
+    adc_voltage = raw_adc * 3.3 / 65535.0
+    # Reverse voltage divider to find sensor voltage
+    Vs = adc_voltage / V_DIV
+
+    # Sensor resistance
+    # R_L (sensor resistance) is omitted since it will cancel in the Rs/Ro ratio
+    Rs = (5.0 - Vs) / Vs
+
+    return Rs
+
+def gas_ppm(Rs, Ro, MQ_m, MQ_b):
+    # Rs/Ro ratio
+    ratio = Rs / Ro
+
+    # ppm calculation
+    # Derived from log(y) = m*log(x) + b
+    # where y = Rs / Ro, x = ppm
+    ppm = math.pow(10, (math.log10(ratio) - MQ_b) / MQ_m)
+
+    return ppm
 
 async def transmit_data():
     while True:
