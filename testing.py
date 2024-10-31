@@ -4,11 +4,11 @@ import uasyncio as asyncio
 import RGB1602
 import math
 
-# Clean Air Ro values
+# Clean Air Ro values (OLD)
 # MQ-4: 44.49364
-# Orange: 9.630916
+# Orange (MQ-3?): 9.630916
 # MQ-135: 40.52869
-# Black: 38.10349
+# Black (MQ-7?): 38.10349
 
 LED = machine.Pin("LED", machine.Pin.OUT)
 # GPIO Pins used for sensors
@@ -17,7 +17,7 @@ LED = machine.Pin("LED", machine.Pin.OUT)
 MQ_4 = machine.ADC(machine.Pin(28))
 MQ_7 = machine.ADC(machine.Pin(27))
 MQ_135 = machine.ADC(machine.Pin(26))
-LCD = RGB1602.RGB1602(16, 2)
+#LCD = RGB1602.RGB1602(16, 2)
 MQ_4_D = machine.Pin(machine.Pin(15), machine.Pin.IN)
 
 # Voltage Divider (used to convert sensor output from 5V to 3.3V)
@@ -85,6 +85,44 @@ def gas_ppm(Rs, Ro, MQ_m, MQ_b):
 
     return ppm
 
+# prints average of the last n values of the gas sensors
+def print_average(n : int):
+    # Initialize lists to store the last 5 values for a, b, c
+    a_values = []
+    b_values = []
+    c_values = []
+
+    while True:
+        a = read_gas_sensor(MQ_4)
+        b = read_gas_sensor(MQ_7)
+        c = read_gas_sensor(MQ_135)
+        time.sleep_ms(200)
+
+        # Update the value lists (keeping only the last n values)
+        if len(a_values) >= n:
+            a_values.pop(0)
+        if len(b_values) >= n:
+            b_values.pop(0)
+        if len(c_values) >= n:
+            c_values.pop(0)
+
+        a_values.append(a)
+        b_values.append(b)
+        c_values.append(c)
+
+        if len(a_values) == n:
+            a_avg = mean(a_values)
+            b_avg = mean(b_values)
+            c_avg = mean(c_values)
+
+            # Print the averages
+            print(f"MQ-4: {a_avg}")
+            print(f"MQ-7: {b_avg}")
+            print(f"MQ-135: {c_avg}")
+
+print_average(8)
+
+
 """
 while True:
     print(f"MQ-4: {read_gas_sensor(MQ_4)}")
@@ -93,41 +131,6 @@ while True:
     print(f"MQ-4 (D): {MQ_4_D.IN.to_bytes}")
     time.sleep_ms(200)
 """
-
-
-# Initialize lists to store the last 5 values for a, b, c
-a_values = []
-b_values = []
-c_values = []
-
-while True:
-    # Replace these with your actual logic to get new readings a, b, c
-    a = read_gas_sensor(MQ_4)  # function to get the latest value for a
-    b = read_gas_sensor(MQ_7)  # function to get the latest value for b
-    c = read_gas_sensor(MQ_135)  # function to get the latest value for c
-    time.sleep_ms(200)
-
-    # Update the value lists (keeping only the last 5 values)
-    if len(a_values) >= 20:
-        a_values.pop(0)
-    if len(b_values) >= 20:
-        b_values.pop(0)
-    if len(c_values) >= 20:
-        c_values.pop(0)
-
-    a_values.append(a)
-    b_values.append(b)
-    c_values.append(c)
-
-    if len(a_values) == 20:
-        a_avg = mean(a_values)
-        b_avg = mean(b_values)
-        c_avg = mean(c_values)
-
-        # Print the averages
-        print(f"Average of 'a': {a_avg}")
-        print(f"Average of 'b': {b_avg}")
-        print(f"Average of 'c': {c_avg}")
 
 """
 write_to_LCD("testing1", "normal", "normal")
