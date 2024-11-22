@@ -9,6 +9,7 @@ import bluetooth
 from machine import Pin, ADC, reset
 import math
 import RGB1602
+import struct
 
 # Enables logging to log.txt in root directory of Pico W
 # For testing/debugging purposes only, will eventually fill the board's 2 MB flash memory
@@ -60,23 +61,25 @@ _ADV_APPEARANCE_GENERIC_SENSOR = const(0x0540)
 _ADV_INTERVAL_US = const(250_000)
 # Pico W MAC Address
 # D8:3A:DD:73:5A:75
+# Global Battery Percent Variable
+batt_avg = 0
 
 # Register GATT server.
 env_service = aioble.Service(_ENV_SENSE_UUID)
 co_characteristic = aioble.Characteristic(
-    env_service, _ENV_SENSE_CO_UUID, read=True, notify=True, initial=0
+    env_service, _ENV_SENSE_CO_UUID, read=True, notify=True
 )
 ch4_characteristic = aioble.Characteristic(
-    env_service, _ENV_SENSE_CH4_UUID, read=True, notify=True, initial=0
+    env_service, _ENV_SENSE_CH4_UUID, read=True, notify=True
 )
 co2_characteristic = aioble.Characteristic(
-    env_service, _ENV_SENSE_CO2_UUID, read=True, notify=True, initial=0
+    env_service, _ENV_SENSE_CO2_UUID, read=True, notify=True
 )
 batt_characteristic = aioble.Characteristic(
-    env_service, _ENV_SENSE_BATT_UUID, read=True, notify=True, initial=0
+    env_service, _ENV_SENSE_BATT_UUID, read=True, notify=True
 )
 recv_characteristic = aioble.Characteristic(
-    env_service, _ENV_SENSE_RECV_UUID, write=True, read=True, notify=True, capture=True, initial=0
+    env_service, _ENV_SENSE_RECV_UUID, write=True, read=True, notify=True, capture=True
 )
 aioble.register_services(env_service)
 
@@ -141,6 +144,9 @@ def gas_ppm(Rs, Ro, MQ_m, MQ_b):
     # where y = Rs / Ro, x = ppm
     ppm = math.pow(10, (math.log10(ratio) - MQ_b) / MQ_m)
 
+    if (ppm < 0):
+        return 0
+
     return round(ppm)
 
 def warning_levels(ppm_CO, ppm_CH4, ppm_CO2):
@@ -183,40 +189,78 @@ def measure_batt():
     batt_percent = 83.333 * batt_voltage - 250
     return round(batt_percent)
 
-async def transmit_data():
+def mean(values):
+    return sum(values) / len(values) if values else 0
+
+async def batt_rolling_avg():
+    global batt_avg
+    batt_values = []
+
+    while True:
+        batt = measure_batt()
+
+        if len(batt_values) >= 40:
+            batt_values.pop(0)
+
+        batt_values.append(batt)
+
+        batt_avg = round(mean(batt_values))
+        if (batt_avg < 0):
+            batt_avg = 0
+        if (batt_avg > 100):
+            batt_avg = 100
+
+        await asyncio.sleep_ms(50)
+
+async def lcd_task():
     while True:
         co_ppm = gas_ppm(read_gas_sensor(MQ_7), MQ_7_RO, MQ_7_M, MQ_7_B)
-        co_characteristic.write(co_ppm)
-        await asyncio.sleep_ms(50)
         ch4_ppm = gas_ppm(read_gas_sensor(MQ_4), MQ_4_RO, MQ_4_M, MQ_4_B)
-        ch4_characteristic.write(ch4_ppm)
-        await asyncio.sleep_ms(50)
-        co2_ppm = gas_ppm(read_gas_sensor(MQ_135), MQ_135_RO, MQ_135_M, MQ_135_B)
-        co2_characteristic.write(co2_ppm)
-        await asyncio.sleep_ms(50)
-        batt = measure_batt()
-        batt_characteristic.write(batt)
-        await asyncio.sleep_ms(50)
+        co2_ppm = gas_ppm(read_gas_sensor(MQ_135), MQ_135_RO, MQ_135_M, MQ_135_B) + 424
+        batt = batt_avg
 
         level_CO, level_CH4, level_CO2 = warning_levels(co_ppm, ch4_ppm, co2_ppm)
-        line1 = "CO:" + co_ppm + ",CO2:" + co2_ppm
-        line2 = "CH4:" + ch4_ppm + ",BAT:" + batt + "%"
+        line1 = f"CO:{co_ppm} CH4:{ch4_ppm}"[:16]
+        line2 = f"CO2:{co2_ppm} BAT:{batt}%"[:16]
         backlight = "normal"
 
-        if (level == "alert" for level in [level_CO, level_CH4, level_CO2]):
+        if any(level == "alert" for level in [level_CO, level_CH4, level_CO2]):
             backlight = "alert"
-        if (level == "warning" for level in [level_CO, level_CH4, level_CO2]):
+        if any(level == "warning" for level in [level_CO, level_CH4, level_CO2]):
             backlight = "warning"
+
+        # Testing
+        #line1 = f"CO:{level_CO[:1]},CO2:{level_CO2[:1]},{backlight[:1]}"[:16]
+        #line2 = f"CH4:{level_CH4[:1]},BAT:{batt}%"[:16]
 
         write_to_LCD(line1, line2, backlight)
         await asyncio.sleep_ms(500)
 
+async def transmit_data(connection):
+    while True:
+        co_ppm = gas_ppm(read_gas_sensor(MQ_7), MQ_7_RO, MQ_7_M, MQ_7_B)
+        co_characteristic.write(struct.pack("<H", co_ppm))
+        co_characteristic.notify(connection)
+        await asyncio.sleep_ms(50)
+        ch4_ppm = gas_ppm(read_gas_sensor(MQ_4), MQ_4_RO, MQ_4_M, MQ_4_B)
+        ch4_characteristic.write(struct.pack("<H", ch4_ppm))
+        ch4_characteristic.notify(connection)
+        await asyncio.sleep_ms(50)
+        co2_ppm = gas_ppm(read_gas_sensor(MQ_135), MQ_135_RO, MQ_135_M, MQ_135_B) + 424
+        co2_characteristic.write(struct.pack("<H", co2_ppm))
+        co2_characteristic.notify(connection)
+        await asyncio.sleep_ms(50)
+        batt = batt_avg
+        batt_characteristic.write(struct.pack("<H", batt))
+        batt_characteristic.notify(connection)
+        await asyncio.sleep_ms(500)
 
-async def receive_data():
+
+async def receive_data(connection):
     while True:
         connection, data = await recv_characteristic.written()
         await asyncio.sleep_ms(50)
-        recv_characteristic.notify(connection, "Received!")
+        recv_characteristic.notify(connection, b"Received!")
         await asyncio.sleep_ms(50)
         _logger("Data received:")
         _logger(data.decode())
@@ -232,6 +276,11 @@ async def peripheral_task():
             appearance=_ADV_APPEARANCE_GENERIC_SENSOR,
         ) as connection:
             _logger("Connection from:", connection.device)
+
+            # Start data transmission and reception tasks
+            asyncio.create_task(transmit_data(connection))
+            asyncio.create_task(receive_data(connection))
+
             await connection.disconnected(timeout_ms=None)
             _logger("Device disconeccted:", connection.device)
             await asyncio.sleep_ms(100)
@@ -240,9 +289,9 @@ async def peripheral_task():
 async def main():
     try:
         tasks = [
+            asyncio.create_task(batt_rolling_avg()),
             asyncio.create_task(peripheral_task()),
-            asyncio.create_task(transmit_data()),
-            asyncio.create_task(receive_data()),
+            asyncio.create_task(lcd_task())
         ]
         await asyncio.gather(*tasks)
 

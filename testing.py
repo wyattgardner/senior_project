@@ -6,10 +6,21 @@ import RGB1602
 import math
 import network
 
+# Parameters derived from calibration data
+# -----------------------------------------
 # Clean Air Ro values
-# MQ-4: 94.94876
-# MQ-7: 89.80074
-# MQ-135: 73.23104
+MQ_4_RO = 94.94876
+MQ_7_RO = 89.80074
+MQ_135_RO = 73.23104
+# -----------------------------------------
+# Slope/intercept points for log(y) = m*log(x) + b
+# where y = Rs / Ro, x = ppm
+MQ_4_M = -0.248653271
+MQ_4_B = 0.210873798
+MQ_7_M = -0.035950986
+MQ_7_B = -0.602351089
+MQ_135_M = -0.21840921
+MQ_135_B = -0.188441654
 
 LED = machine.Pin("LED", machine.Pin.OUT)
 # GPIO Pins used for sensors
@@ -18,7 +29,7 @@ LED = machine.Pin("LED", machine.Pin.OUT)
 MQ_4 = machine.ADC(machine.Pin(28))
 MQ_7 = machine.ADC(machine.Pin(27))
 MQ_135 = machine.ADC(machine.Pin(26))
-#LCD = RGB1602.RGB1602(16, 2)
+LCD = RGB1602.RGB1602(16, 2)
 MQ_4_D = machine.Pin(machine.Pin(15), machine.Pin.IN)
 
 # Voltage Divider (used to convert sensor output from 5V to 3.3V)
@@ -169,11 +180,78 @@ def warning_levels(ppm_CO, ppm_CH4, ppm_CO2):
 
     return level_CO, level_CH4, level_CO2
 
+def measure_batt():
+    Pin(25, Pin.OUT, value=1)
+    Pin(29, Pin.IN, pull=None)
+    batt_voltage = ADC(3).read_u16() * 9.9 / 65535.0
+    Pin(25, Pin.OUT, value=0, pull=Pin.PULL_DOWN)
+    Pin(29, Pin.ALT, pull=Pin.PULL_DOWN, alt=7)
+    # 4.2V = 100%, 3.0V = 0%
+    batt_percent = 83.333 * batt_voltage - 250
+    return round(batt_percent)
+
+async def lcd_task():
+    while True:
+        co_ppm = gas_ppm(read_gas_sensor(MQ_7), MQ_7_RO, MQ_7_M, MQ_7_B)
+        ch4_ppm = gas_ppm(read_gas_sensor(MQ_4), MQ_4_RO, MQ_4_M, MQ_4_B)
+        co2_ppm = gas_ppm(read_gas_sensor(MQ_135), MQ_135_RO, MQ_135_M, MQ_135_B) + 424
+        batt = measure_batt()
+
+        level_CO, level_CH4, level_CO2 = warning_levels(co_ppm, ch4_ppm, co2_ppm)
+        line1 = f"CO:{co_ppm} CO2:{co2_ppm}"[:16]
+        line2 = f"CH4:{ch4_ppm} BAT:{batt}%"[:16]
+        backlight = "normal"
+
+        if any(level == "alert" for level in [level_CO, level_CH4, level_CO2]):
+            backlight = "alert"
+        if any(level == "warning" for level in [level_CO, level_CH4, level_CO2]):
+            backlight = "warning"
+
+        # Testing
+        #line1 = f"CO:{level_CO[:1]},CO2:{level_CO2[:1]},{backlight[:1]}"[:16]
+        #line2 = f"CH4:{level_CH4[:1]},BAT:{batt}%"[:16]
+
+        write_to_LCD(line1, line2, backlight)
+        await asyncio.sleep_ms(500)
+
+async def test_run():
+    while True:
+        line1 = f"CO:0 CH4:0"[:16]
+        line2 = f"CO2:424 BAT:75%"[:16]
+        backlight = "normal"
+        write_to_LCD(line1, line2, backlight)
+        await asyncio.sleep_ms(2000)
+
+        line1 = f"CO:50 CH4:5000"[:16]
+        line2 = f"CO2:5000 BAT:75%"[:16]
+        backlight = "warning"
+        write_to_LCD(line1, line2, backlight)
+        await asyncio.sleep_ms(2000)
+
+        line1 = f"CO:200 CH4:50000"[:16]
+        line2 = f"CO2:3000 BAT:75%"[:16]
+        backlight = "alert"
+        write_to_LCD(line1, line2, backlight)
+        await asyncio.sleep_ms(2000)
+
 #print_average(8)
+
 #write_to_LCD("test1", "test2")
+
 #display_mac()
-level_CO, level_CH4, level_CO2 = warning_levels(100, 50, 40000)
-print(level_CO, level_CH4, level_CO2)
+
+#level_CO, level_CH4, level_CO2 = warning_levels(100, 50, 40000)
+#print(level_CO, level_CH4, level_CO2)
+
+#print(gas_ppm(MQ_135_RO, MQ_135_RO, MQ_135_M, MQ_135_B))
+
+async def main():
+    tasks = [
+        asyncio.create_task(test_run())
+    ]
+    await asyncio.gather(*tasks)
+
+asyncio.run(main())
 
 """
 while True:
