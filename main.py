@@ -6,7 +6,7 @@ from micropython import const
 import uasyncio as asyncio
 import aioble
 import bluetooth
-import machine
+from machine import Pin, ADC, reset
 import math
 import RGB1602
 
@@ -15,15 +15,31 @@ import RGB1602
 ENABLE_LOGGING = const(False)
 
 # GPIO Pins used for sensors
-# LCD: SDA is on GPIO20, and SCL is on GPIO21
-MQ_4 = machine.ADC(machine.Pin(28))
-MQ_7 = machine.ADC(machine.Pin(27))
-MQ_135 = machine.ADC(machine.Pin(26))
-#LCD = RGB1602.RGB1602(16, 2)
+# LCD: SDA is on GPIO4, and SCL is on GPIO5
+MQ_4 = ADC(Pin(28))
+MQ_7 = ADC(Pin(27))
+MQ_135 = ADC(Pin(26))
+LCD = RGB1602.RGB1602(16, 2)
 
 # Voltage Divider (used to convert sensor output from 5V to 3.3V)
 # 1000 / (470 + 1000)
 V_DIV = const(0.680272108843537)
+
+# Parameters derived from calibration data
+# -----------------------------------------
+# Clean Air Ro values
+MQ_4_RO = 94.94876
+MQ_7_RO = 89.80074
+MQ_135_RO = 73.23104
+# -----------------------------------------
+# Slope/intercept points for log(y) = m*log(x) + b
+# where y = Rs / Ro, x = ppm
+MQ_4_M = -0.248653271
+MQ_4_B = 0.210873798
+MQ_7_M = -0.035950986
+MQ_7_B = -0.602351089
+MQ_135_M = -0.21840921
+MQ_135_B = -0.188441654
 
 # BLE Constants
 # org.bluetooth.service.environmental_sensing
@@ -32,23 +48,35 @@ _ENV_SENSE_UUID = bluetooth.UUID(0x181A)
 _ENV_SENSE_CO_UUID = bluetooth.UUID("ef090000-2ec0-4cd4-8f5a-51de99e65ecb")
 # Methane
 _ENV_SENSE_CH4_UUID = bluetooth.UUID("ef090001-2ec0-4cd4-8f5a-51de99e65ecb")
+# Carbon Dioxide
+_ENV_SENSE_CO2_UUID = bluetooth.UUID("ef090002-2ec0-4cd4-8f5a-51de99e65ecb")
+# Battery
+_ENV_SENSE_BATT_UUID = bluetooth.UUID("ef090003-2ec0-4cd4-8f5a-51de99e65ecb")
 # Data Receiving
-_ENV_SENSE_RECV_UUID = bluetooth.UUID("ef090002-2ec0-4cd4-8f5a-51de99e65ecb")
+_ENV_SENSE_RECV_UUID = bluetooth.UUID("ef090004-2ec0-4cd4-8f5a-51de99e65ecb")
 # org.bluetooth.characteristic.gap.appearance.xml
 _ADV_APPEARANCE_GENERIC_SENSOR = const(0x0540)
 # How frequently to send advertising beacons in microseconds
 _ADV_INTERVAL_US = const(250_000)
+# Pico W MAC Address
+# D8:3A:DD:73:5A:75
 
 # Register GATT server.
 env_service = aioble.Service(_ENV_SENSE_UUID)
 co_characteristic = aioble.Characteristic(
-    env_service, _ENV_SENSE_CO_UUID, read=True, notify=True, initial="CO"
+    env_service, _ENV_SENSE_CO_UUID, read=True, notify=True, initial=0
 )
 ch4_characteristic = aioble.Characteristic(
-    env_service, _ENV_SENSE_CH4_UUID, read=True, notify=True, initial="CH4"
+    env_service, _ENV_SENSE_CH4_UUID, read=True, notify=True, initial=0
+)
+co2_characteristic = aioble.Characteristic(
+    env_service, _ENV_SENSE_CO2_UUID, read=True, notify=True, initial=0
+)
+batt_characteristic = aioble.Characteristic(
+    env_service, _ENV_SENSE_BATT_UUID, read=True, notify=True, initial=0
 )
 recv_characteristic = aioble.Characteristic(
-    env_service, _ENV_SENSE_RECV_UUID, write=True, read=True, notify=True, capture=True, initial="RECEIVE"
+    env_service, _ENV_SENSE_RECV_UUID, write=True, read=True, notify=True, capture=True, initial=0
 )
 aioble.register_services(env_service)
 
@@ -89,7 +117,7 @@ def write_to_LCD(line1: str, line2: str, backlight: str = "normal"):
     else:
         LCD.setRGB(255, 255, 255)
 
-def read_gas_sensor(adc : machine.ADC):
+def read_gas_sensor(adc : ADC):
     # Read the analog value (0 - 65535)
     raw_adc = adc.read_u16()
 
@@ -113,14 +141,76 @@ def gas_ppm(Rs, Ro, MQ_m, MQ_b):
     # where y = Rs / Ro, x = ppm
     ppm = math.pow(10, (math.log10(ratio) - MQ_b) / MQ_m)
 
-    return ppm
+    return round(ppm)
+
+def warning_levels(ppm_CO, ppm_CH4, ppm_CO2):
+    # Initialize Levels
+    level_CO = "normal"
+    level_CH4 = "normal"
+    level_CO2 = "normal"
+
+    # Check levels
+
+    # CO Warning - OSHA PEL (permissible exposure limit)
+    if (ppm_CO >= 50):
+        level_CO = "warning"
+    # CO Alert - NIOSH C (ceiling level)
+    if (ppm_CO >= 200):
+        level_CO = "alert"
+    # CH4 Warning - Committee on Toxicology recommended long-term exposure limit
+    if (ppm_CH4 >= 5000):
+        level_CH4 = "warning"
+    # CH4 Alert - concentration at which methane becomes flammable
+    if (ppm_CH4 >= 50_000):
+        level_CH4 = "alert"
+    # CO2 Warning - OSHA PEL
+    if (ppm_CO2 >= 5000):
+        level_CO2 = "warning"
+    # CO2 Alert - NIOSH ST (short term limit)
+    if (ppm_CO2 >= 30_000):
+        level_CO2 = "alert"
+
+    return level_CO, level_CH4, level_CO2
+
+# Measures battery voltage, returns charge percent
+def measure_batt():
+    Pin(25, Pin.OUT, value=1)
+    Pin(29, Pin.IN, pull=None)
+    batt_voltage = ADC(3).read_u16() * 9.9 / 65535.0
+    Pin(25, Pin.OUT, value=0, pull=Pin.PULL_DOWN)
+    Pin(29, Pin.ALT, pull=Pin.PULL_DOWN, alt=7)
+    # 4.2V = 100%, 3.0V = 0%
+    batt_percent = 83.333 * batt_voltage - 250
+    return round(batt_percent)
 
 async def transmit_data():
     while True:
-        co_characteristic.write("test1")
+        co_ppm = gas_ppm(read_gas_sensor(MQ_7), MQ_7_RO, MQ_7_M, MQ_7_B)
+        co_characteristic.write(co_ppm)
         await asyncio.sleep_ms(50)
-        ch4_characteristic.write("test2")
+        ch4_ppm = gas_ppm(read_gas_sensor(MQ_4), MQ_4_RO, MQ_4_M, MQ_4_B)
+        ch4_characteristic.write(ch4_ppm)
         await asyncio.sleep_ms(50)
+        co2_ppm = gas_ppm(read_gas_sensor(MQ_135), MQ_135_RO, MQ_135_M, MQ_135_B)
+        co2_characteristic.write(co2_ppm)
+        await asyncio.sleep_ms(50)
+        batt = measure_batt()
+        batt_characteristic.write(batt)
+        await asyncio.sleep_ms(50)
+
+        level_CO, level_CH4, level_CO2 = warning_levels(co_ppm, ch4_ppm, co2_ppm)
+        line1 = "CO:" + co_ppm + ",CO2:" + co2_ppm
+        line2 = "CH4:" + ch4_ppm + ",BAT:" + batt + "%"
+        backlight = "normal"
+
+        if (level == "alert" for level in [level_CO, level_CH4, level_CO2]):
+            backlight = "alert"
+        if (level == "warning" for level in [level_CO, level_CH4, level_CO2]):
+            backlight = "warning"
+
+        write_to_LCD(line1, line2, backlight)
+        await asyncio.sleep_ms(500)
+
 
 async def receive_data():
     while True:
@@ -161,6 +251,6 @@ async def main():
         _logger('Ending session and restarting...\n\n')
         if ENABLE_LOGGING:
             log_file.close()
-        machine.reset()
+        reset()
 
 asyncio.run(main())

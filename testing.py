@@ -1,18 +1,19 @@
 import time
 import machine
+from machine import Pin, ADC
 import uasyncio as asyncio
 import RGB1602
 import math
+import network
 
-# Clean Air Ro values (OLD)
-# MQ-4: 44.49364
-# Orange (MQ-3?): 9.630916
-# MQ-135: 40.52869
-# Black (MQ-7?): 38.10349
+# Clean Air Ro values
+# MQ-4: 94.94876
+# MQ-7: 89.80074
+# MQ-135: 73.23104
 
 LED = machine.Pin("LED", machine.Pin.OUT)
 # GPIO Pins used for sensors
-# LCD: SDA is on GPIO20, and SCL is on GPIO21
+# LCD: SDA is on GPIO4, and SCL is on GPIO5
 # LCD I2C addresses: 0x3e, 0x60
 MQ_4 = machine.ADC(machine.Pin(28))
 MQ_7 = machine.ADC(machine.Pin(27))
@@ -120,8 +121,59 @@ def print_average(n : int):
             print(f"MQ-7: {b_avg}")
             print(f"MQ-135: {c_avg}")
 
-print_average(8)
+# Measures battery voltage
+def measure_vsys():
+    Pin(25, Pin.OUT, value=1)
+    Pin(29, Pin.IN, pull=None)
+    reading = ADC(3).read_u16() * 9.9 / 2**16
+    Pin(25, Pin.OUT, value=0, pull=Pin.PULL_DOWN)
+    Pin(29, Pin.ALT, pull=Pin.PULL_DOWN, alt=7)
+    return reading
 
+def display_mac():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+
+    mac = wlan.config("mac")
+
+    mac_address = ":".join("%02x" % b for b in mac)
+
+    print("MAC Address:", mac_address)
+
+def warning_levels(ppm_CO, ppm_CH4, ppm_CO2):
+    # Initialize Levels
+    level_CO = "normal"
+    level_CH4 = "normal"
+    level_CO2 = "normal"
+
+    # Check levels
+
+    # CO Warning - OSHA PEL (permissible exposure limit)
+    if (ppm_CO >= 50):
+        level_CO = "warning"
+    # CO Alert - NIOSH C (ceiling level)
+    if (ppm_CO >= 200):
+        level_CO = "alert"
+    # CH4 Warning - Committee on Toxicology recommended long-term exposure limit
+    if (ppm_CH4 >= 5000):
+        level_CH4 = "warning"
+    # CH4 Alert - concentration at which methane becomes flammable
+    if (ppm_CH4 >= 50_000):
+        level_CH4 = "alert"
+    # CO2 Warning - OSHA PEL
+    if (ppm_CO2 >= 5000):
+        level_CO2 = "warning"
+    # CO2 Alert - NIOSH ST (short term limit)
+    if (ppm_CO2 >= 30_000):
+        level_CO2 = "alert"
+
+    return level_CO, level_CH4, level_CO2
+
+#print_average(8)
+#write_to_LCD("test1", "test2")
+#display_mac()
+level_CO, level_CH4, level_CO2 = warning_levels(100, 50, 40000)
+print(level_CO, level_CH4, level_CO2)
 
 """
 while True:
